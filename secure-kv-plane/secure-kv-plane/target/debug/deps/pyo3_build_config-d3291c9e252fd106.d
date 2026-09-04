@@ -1,0 +1,14 @@
+/workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/deps/pyo3_build_config-d3291c9e252fd106.d: /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs /workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config-file.txt /workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config.txt
+
+/workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/deps/libpyo3_build_config-d3291c9e252fd106.rlib: /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs /workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config-file.txt /workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config.txt
+
+/workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/deps/libpyo3_build_config-d3291c9e252fd106.rmeta: /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs /workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config-file.txt /workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config.txt
+
+/home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/lib.rs:
+/home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/errors.rs:
+/home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.21.2/src/impl_.rs:
+/workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config-file.txt:
+/workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.21.2
+# env-dep:OUT_DIR=/workspaces/secure-kv-plane/secure-kv-plane/secure-kv-plane/target/debug/build/pyo3-build-config-cee87f5607fc512b/out

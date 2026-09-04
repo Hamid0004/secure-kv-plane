@@ -3,10 +3,16 @@ name = "secure-kv-plane"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "secure_kv_plane"          # <-- ye line add karo (underscore)
+crate-type = ["cdylib"]
+
 [dependencies]
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+parking_lot = "0.12"
+pyo3 = { version = "0.21", features = ["extension-module"] }
 
 [dev-dependencies]
 rand = "0.8"
