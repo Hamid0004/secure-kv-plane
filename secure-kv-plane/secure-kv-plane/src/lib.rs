@@ -1,6 +1,5 @@
 use parking_lot::RwLock;
 use pyo3::prelude::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 // ------------------- Module Declarations -------------------
@@ -8,7 +7,6 @@ pub mod radix;
 use radix::{TenantId, TenantPrefixCache};
 
 // ------------------- KeyManager (HMAC) -------------------
-// ... (previous HMAC code)
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
@@ -52,19 +50,17 @@ impl PySecureCache {
     #[new]
     fn new(secret: Vec<u8>) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(TenantPrefixCache::new())),
+            inner: Arc::new(RwLock::new(TenantPrefixCache::new(2))), // capacity = 2 for demo
             key_manager: KeyManager::new(secret),
         }
     }
 
-    fn insert(&mut self, tenant_id: String, tokens: Vec<u32>, block_data: Vec<u8>) {
-        // Generate the HMAC-based block ID.
+    /// Insert a block and return the evicted block ID (if any).
+    fn insert(&mut self, tenant_id: String, tokens: Vec<u32>, _block_data: Vec<u8>) -> Option<String> {
         let block_id = self.key_manager.derive_key(&tenant_id, &tokens);
-        
-        // Lock and insert into the radix tree.
-        let mut cache = self.inner.write();
-        let tenant = TenantId(tenant_id.clone());
-        cache.insert(tenant, tokens, block_id);
+        let cache = self.inner.write(); // no mut needed
+        let tenant = TenantId(tenant_id);
+        cache.insert(tenant, tokens, block_id)
     }
 
     fn match_prefix(&self, tenant_id: String, tokens: Vec<u32>) -> (usize, Option<String>) {
@@ -75,8 +71,6 @@ impl PySecureCache {
     }
 
     fn lookup_block(&self, block_id: String) -> Vec<u8> {
-        // Placeholder: In a real system, you'd fetch from a KV store.
-        // For now, return the block_id as bytes to simulate.
         block_id.into_bytes()
     }
 }

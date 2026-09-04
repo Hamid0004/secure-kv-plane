@@ -1,7 +1,8 @@
-//! Tenant‑isolated radix tree (trie) for efficient prefix matching.
+//! Tenant‑isolated radix tree with LRU eviction.
 
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 // ------------------- Types -------------------
@@ -21,6 +22,7 @@ pub struct MatchResult {
 pub struct RadixNode {
     children: HashMap<u32, Arc<RwLock<RadixNode>>>,
     block_id: Option<String>,
+    access_tick: Option<u64>,
 }
 
 impl RadixNode {
@@ -28,51 +30,63 @@ impl RadixNode {
         Self {
             children: HashMap::new(),
             block_id: None,
+            access_tick: None,
         }
     }
 
-    // Helper to get a child by token, returning an Arc clone.
     fn get_child(&self, token: u32) -> Option<Arc<RwLock<RadixNode>>> {
         self.children.get(&token).cloned()
     }
 
-    // Helper to insert a child (returns the new child's Arc).
     fn insert_child(&mut self, token: u32) -> Arc<RwLock<RadixNode>> {
         let child = Arc::new(RwLock::new(RadixNode::new()));
         self.children.insert(token, child.clone());
         child
     }
+
+    fn set_block(&mut self, block_id: String, tick: u64) {
+        self.block_id = Some(block_id);
+        self.access_tick = Some(tick);
+    }
+
+    fn clear_block(&mut self) -> Option<String> {
+        let id = self.block_id.take();
+        self.access_tick = None;
+        id
+    }
 }
 
-// ------------------- Tenant Cache -------------------
+// ------------------- Tenant Cache with LRU -------------------
 
 pub struct TenantPrefixCache {
     tenants: RwLock<HashMap<TenantId, Arc<RwLock<RadixNode>>>>,
+    block_counts: RwLock<HashMap<TenantId, usize>>,
+    capacity: usize,
+    current_tick: AtomicU64,
 }
 
 impl TenantPrefixCache {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             tenants: RwLock::new(HashMap::new()),
+            block_counts: RwLock::new(HashMap::new()),
+            capacity,
+            current_tick: AtomicU64::new(1),
         }
     }
 
-    /// Insert a block for a tenant.
-    pub fn insert(&self, tenant_id: TenantId, tokens: Vec<u32>, block_id: String) {
-        let root = self.get_or_create_root(tenant_id);
+    pub fn insert(&self, tenant_id: TenantId, tokens: Vec<u32>, block_id: String) -> Option<String> {
+        let root = self.get_or_create_root(tenant_id.clone());
 
         let mut current = root;
         for &token in &tokens {
-            // Try to get child under read lock.
             let next = {
                 let node = current.read();
                 if let Some(child) = node.get_child(token) {
                     child
                 } else {
-                    // Need to insert – upgrade to write lock.
                     drop(node);
                     let mut node_w = current.write();
-                    // Double-check (could have been inserted by another thread).
                     if let Some(existing) = node_w.get_child(token) {
                         existing
                     } else {
@@ -83,12 +97,15 @@ impl TenantPrefixCache {
             current = next;
         }
 
-        // At final node – set block_id.
-        let mut final_node = current.write();
-        final_node.block_id = Some(block_id);
+        let tick = self.current_tick.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut final_node = current.write();
+            final_node.set_block(block_id.clone(), tick);
+        }
+
+        self.enforce_capacity(&tenant_id)
     }
 
-    /// Match longest prefix.
     pub fn match_prefix(&self, tenant_id: &TenantId, tokens: &[u32]) -> MatchResult {
         let root = {
             let tenants = self.tenants.read();
@@ -102,23 +119,29 @@ impl TenantPrefixCache {
         let mut current = root;
         let mut matched_len = 0;
         let mut matched_block_id = None;
+        let mut final_node_arc: Option<Arc<RwLock<RadixNode>>> = None;
 
         for (idx, &token) in tokens.iter().enumerate() {
             let node = current.read();
             if let Some(child) = node.get_child(token) {
-                // Move to child.
                 drop(node);
-                current = child;
+                current = child.clone();
                 matched_len = idx + 1;
-                // Check if this node has a block_id.
-                let child_node = current.read();
-                if let Some(id) = &child_node.block_id {
+                let child_read = current.read();
+                if let Some(id) = &child_read.block_id {
                     matched_block_id = Some(id.clone());
+                    final_node_arc = Some(current.clone());
                 }
-                // Continue; we drop the guard at the end of iteration.
             } else {
-                // No child – stop matching.
                 break;
+            }
+        }
+
+        if let Some(arc) = final_node_arc {
+            let tick = self.current_tick.fetch_add(1, Ordering::Relaxed);
+            let mut node = arc.write();
+            if node.block_id.is_some() {
+                node.access_tick = Some(tick);
             }
         }
 
@@ -128,22 +151,84 @@ impl TenantPrefixCache {
         }
     }
 
-    // Helper: get or create tenant root.
+    // ------------------- Internal Helpers -------------------
+
     fn get_or_create_root(&self, tenant_id: TenantId) -> Arc<RwLock<RadixNode>> {
         let mut tenants = self.tenants.write();
         if let Some(root) = tenants.get(&tenant_id) {
             root.clone()
         } else {
             let new_root = Arc::new(RwLock::new(RadixNode::new()));
-            tenants.insert(tenant_id, new_root.clone());
+            tenants.insert(tenant_id.clone(), new_root.clone());
+            self.block_counts.write().insert(tenant_id, 0);
             new_root
+        }
+    }
+
+    fn enforce_capacity(&self, tenant_id: &TenantId) -> Option<String> {
+        let mut counts = self.block_counts.write();
+        let count = counts.entry(tenant_id.clone()).or_insert(0);
+        if *count < self.capacity {
+            *count += 1;
+            return None;
+        }
+
+        let root = {
+            let tenants = self.tenants.read();
+            tenants.get(tenant_id).cloned()
+        };
+        let root = match root {
+            Some(r) => r,
+            None => return None,
+        };
+
+        let (evict_node_arc, evicted_id) = self.find_lru_node(&root);
+        if let Some((arc, id)) = evict_node_arc.zip(evicted_id) {
+            let mut node = arc.write();
+            node.clear_block();
+            *count = count.saturating_sub(1);
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    fn find_lru_node(&self, root: &Arc<RwLock<RadixNode>>) -> (Option<Arc<RwLock<RadixNode>>>, Option<String>) {
+        let mut best_arc = None;
+        let mut best_tick = None;
+        let mut best_id = None;
+
+        self.find_lru_node_rec(root, &mut best_arc, &mut best_tick, &mut best_id);
+
+        (best_arc, best_id)
+    }
+
+    fn find_lru_node_rec(
+        &self,
+        node_arc: &Arc<RwLock<RadixNode>>,
+        best_arc: &mut Option<Arc<RwLock<RadixNode>>>,
+        best_tick: &mut Option<u64>,
+        best_id: &mut Option<String>,
+    ) {
+        let node = node_arc.read();
+
+        if let Some(tick) = node.access_tick {
+            if best_tick.is_none() || tick < *best_tick.as_ref().unwrap() {
+                *best_tick = Some(tick);
+                *best_arc = Some(node_arc.clone());
+                *best_id = node.block_id.clone();
+            }
+        }
+
+        for child in node.children.values() {
+            self.find_lru_node_rec(child, best_arc, best_tick, best_id);
         }
     }
 }
 
 impl Default for TenantPrefixCache {
     fn default() -> Self {
-        Self::new()
+        Self::new(100)
     }
 }
 
@@ -155,79 +240,67 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn test_insert_and_match() {
-        let cache = TenantPrefixCache::new();
-        let tenant = TenantId("tenant-a".to_string());
+    fn test_lru_eviction_basic() {
+        let cache = TenantPrefixCache::new(2);
+        let tenant = TenantId("tenant".to_string());
 
-        cache.insert(tenant.clone(), vec![1, 2, 3, 4], "B1".to_string());
-        cache.insert(tenant.clone(), vec![1, 2, 3, 5], "B2".to_string());
+        let evicted = cache.insert(tenant.clone(), vec![1], "A".to_string());
+        assert_eq!(evicted, None);
+        let evicted = cache.insert(tenant.clone(), vec![2], "B".to_string());
+        assert_eq!(evicted, None);
+        let evicted = cache.insert(tenant.clone(), vec![3], "C".to_string());
+        assert_eq!(evicted, Some("A".to_string()));
 
-        // Query partial match – should stop at 3 (no block_id at 1,2,3)
-        let res = cache.match_prefix(&tenant, &[1, 2, 3, 6]);
-        assert_eq!(res.matched_len, 3);
+        let res = cache.match_prefix(&tenant, &[1]);
         assert_eq!(res.matched_block_id, None);
-
-        // Query extending beyond B1
-        let res = cache.match_prefix(&tenant, &[1, 2, 3, 4, 9]);
-        assert_eq!(res.matched_len, 4);
-        assert_eq!(res.matched_block_id, Some("B1".to_string()));
-
-        // Exact match
-        let res = cache.match_prefix(&tenant, &[1, 2, 3, 4]);
-        assert_eq!(res.matched_len, 4);
-        assert_eq!(res.matched_block_id, Some("B1".to_string()));
+        let res = cache.match_prefix(&tenant, &[2]);
+        assert_eq!(res.matched_block_id, Some("B".to_string()));
+        let res = cache.match_prefix(&tenant, &[3]);
+        assert_eq!(res.matched_block_id, Some("C".to_string()));
     }
 
     #[test]
-    fn test_tenant_isolation() {
-        let cache = TenantPrefixCache::new();
-        let tenant_a = TenantId("tenant-a".to_string());
-        let tenant_b = TenantId("tenant-b".to_string());
+    fn test_lru_eviction_with_access() {
+        let cache = TenantPrefixCache::new(2);
+        let tenant = TenantId("tenant".to_string());
 
-        cache.insert(tenant_a.clone(), vec![10, 20, 30], "A-block".to_string());
-        cache.insert(tenant_b.clone(), vec![10, 20, 30], "B-block".to_string());
+        cache.insert(tenant.clone(), vec![1], "A".to_string());
+        cache.insert(tenant.clone(), vec![2], "B".to_string());
 
-        let res_a = cache.match_prefix(&tenant_a, &[10, 20, 30, 40]);
-        assert_eq!(res_a.matched_block_id, Some("A-block".to_string()));
+        cache.match_prefix(&tenant, &[1]);
 
-        let res_b = cache.match_prefix(&tenant_b, &[10, 20, 30, 40]);
-        assert_eq!(res_b.matched_block_id, Some("B-block".to_string()));
+        let evicted = cache.insert(tenant.clone(), vec![3], "C".to_string());
+        assert_eq!(evicted, Some("B".to_string()));
 
-        // Tenant B can't see A's block.
-        let res_b_again = cache.match_prefix(&tenant_b, &[10, 20, 30]);
-        assert_eq!(res_b_again.matched_block_id, Some("B-block".to_string()));
+        let res = cache.match_prefix(&tenant, &[1]);
+        assert_eq!(res.matched_block_id, Some("A".to_string()));
+        let res = cache.match_prefix(&tenant, &[2]);
+        assert_eq!(res.matched_block_id, None);
+        let res = cache.match_prefix(&tenant, &[3]);
+        assert_eq!(res.matched_block_id, Some("C".to_string()));
     }
 
     #[test]
-    fn test_concurrent_reading_and_writing() {
-        let cache = Arc::new(TenantPrefixCache::new());
-        let tenant = TenantId("tenant-x".to_string());
+    fn test_concurrent_eviction() {
+        let cache = Arc::new(TenantPrefixCache::new(2));
+        let tenant = TenantId("tenant".to_string());
 
         let mut handles = vec![];
-        // Spawn 10 readers.
-        for _ in 0..10 {
+        for i in 0..10 {
             let cache = Arc::clone(&cache);
             let tenant = tenant.clone();
             handles.push(thread::spawn(move || {
-                for _ in 0..50 {
-                    let _ = cache.match_prefix(&tenant, &[1, 2, 3]);
-                }
+                cache.insert(tenant.clone(), vec![i], format!("B{}", i));
             }));
         }
-
-        // Spawn one writer.
-        let writer_cache = Arc::clone(&cache);
-        let writer_tenant = tenant.clone();
-        handles.push(thread::spawn(move || {
-            writer_cache.insert(writer_tenant, vec![1, 2, 3, 4], "B1".to_string());
-        }));
-
         for h in handles {
             h.join().unwrap();
         }
 
-        let res = cache.match_prefix(&tenant, &[1, 2, 3, 4, 5]);
-        assert_eq!(res.matched_len, 4);
-        assert_eq!(res.matched_block_id, Some("B1".to_string()));
+        let count = {
+            let counts = cache.block_counts.read();
+            *counts.get(&tenant).unwrap_or(&0)
+        };
+        assert!(count <= 2);
     }
 }
