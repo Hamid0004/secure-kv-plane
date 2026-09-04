@@ -103,3 +103,5 @@ Phase 3: Integration with vLLM KVConnector.
 Phase 4: Adaptive Timing Jitter (Noise Injection).
 
 Built with ❤️ by Hamid | ⭐ Star this repo if you found it useful!
+
+This Project Is Under MIT license 
